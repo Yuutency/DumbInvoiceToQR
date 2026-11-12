@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Invoice to EPC QR</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1c2430; --muted:#667085; --line:#d9dee5; --accent:#0b5fff; --ok:#0a7d3b; --bad:#c62828; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.45 system-ui, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); }
+  main { max-width:960px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 20px; }
+  .grid { display:grid; grid-template-columns: 1fr 340px; gap:20px; align-items:start; }
+  @media (max-width:760px){ .grid { grid-template-columns:1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  #drop { border:2px dashed var(--line); border-radius:10px; padding:22px; text-align:center; color:var(--muted); cursor:pointer; margin-bottom:16px; background:#fafbfc; }
+  #drop.over { border-color:var(--accent); background:#eef3ff; color:var(--accent); }
+  #drop b { color:var(--ink); }
+  label { display:block; font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:12px 0 4px; }
+  input, select { width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:6px; font:inherit; background:#fff; color:var(--ink); }
+  input:focus, select:focus { outline:2px solid var(--accent); outline-offset:-1px; }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .badge { font-size:12px; font-weight:600; margin-left:6px; text-transform:none; letter-spacing:0; }
+  .ok { color:var(--ok); } .bad { color:var(--bad); }
+  #qrbox { display:flex; justify-content:center; padding:8px 0; min-height:300px; align-items:center; }
+  #qrbox svg { width:100%; max-width:300px; height:auto; image-rendering:pixelated; }
+  #qrbox .empty { color:var(--muted); text-align:center; padding:20px; }
+  .when { border-radius:8px; padding:10px 12px; font-weight:600; margin-bottom:8px; display:none; }
+  .when small { display:block; font-weight:400; opacity:.85; }
+  .when.now { background:#fdecec; color:#a31515; }
+  .when.later { background:#e8f5ec; color:#0a6a32; }
+  .summary { font-size:14px; border-top:1px solid var(--line); padding-top:10px; margin-top:6px; }
+  .summary div { display:flex; justify-content:space-between; gap:12px; padding:2px 0; }
+  .summary span:first-child { color:var(--muted); }
+  .summary span:last-child { font-weight:600; text-align:right; word-break:break-all; }
+  .note { font-size:13px; color:var(--muted); margin-top:10px; }
+  .warn { background:#fff4e5; border:1px solid #ffd8a8; color:#8a4b00; border-radius:6px; padding:8px 10px; font-size:13px; margin-top:10px; display:none; }
+  details { margin-top:14px; font-size:13px; color:var(--muted); }
+  pre { background:#f1f3f6; padding:8px; border-radius:6px; overflow:auto; font-size:12px; color:var(--ink); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Invoice to EPC QR</h1>
+  <p class="sub">Drop the school invoice PDF. Check the fields, then scan the QR with your banking app and verify before paying. Everything stays on this PC.</p>
+
+  <div class="grid">
+    <section class="card">
+      <div id="drop"><b>Drop the invoice PDF here</b><br>or click to choose a file</div>
+      <input id="file" type="file" accept="application/pdf" hidden>
+
+      <label for="name">Payee name</label>
+      <input id="name" autocomplete="off">
+
+      <label for="iban">IBAN <span id="ibanCheck" class="badge"></span></label>
+      <input id="iban" autocomplete="off">
+
+      <div class="row">
+        <div>
+          <label for="bic">BIC</label>
+          <input id="bic" autocomplete="off">
+        </div>
+        <div>
+          <label for="amount">Amount (EUR)</label>
+          <input id="amount" inputmode="decimal" autocomplete="off">
+        </div>
+      </div>
+
+      <label for="due">Due date (vervaldatum)</label>
+      <input id="due" type="date">
+
+      <label for="ref">Structured reference <span id="refCheck" class="badge"></span></label>
+      <input id="ref" placeholder="+++000/0000/00000+++" autocomplete="off">
+
+      <label for="mode">How to put the reference in the QR</label>
+      <select id="mode">
+        <option value="digits">Structured field, digits only (default)</option>
+        <option value="plus">Structured field, with +++ and slashes</option>
+        <option value="free">Free-text message field</option>
+      </select>
+      <div class="note">If your banking app does not fill in the reference after a scan, try another option here. Argenta's behaviour is untested until you scan once.</div>
+      <div id="warn" class="warn"></div>
+    </section>
+
+    <section class="card">
+      <div id="when" class="when"></div>
+      <div id="qrbox"><div class="empty">The QR appears here once IBAN and amount are filled in.</div></div>
+      <div class="summary" id="summary"></div>
+      <details>
+        <summary>QR contents (for debugging)</summary>
+        <pre id="payload"></pre>
+      </details>
+    </section>
+  </div>
+</main>
+
+<script src="lib/pdf.min.js"></script>
+<script src="lib/qrcode.js"></script>
+<script src="lib/qrcode_UTF8.js"></script>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = "lib/pdf.worker.min.js";
+qrcode.stringToBytes = qrcode.stringToBytesFuncs["UTF-8"];
+
+const $ = id => document.getElementById(id);
+
+// ---------- validation helpers ----------
+function ibanValid(raw) {
+  const s = raw.replace(/\s+/g, "").toUpperCase();
+  if (!/^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$/.test(s)) return false;
+  const r = s.slice(4) + s.slice(0, 4);
+  let rem = 0;
+  for (const ch of r) {
+    const v = /\d/.test(ch) ? ch : String(ch.charCodeAt(0) - 55);
+    for (const d of v) rem = (rem * 10 + Number(d)) % 97;
+  }
+  return rem === 1;
+}
+function ogmDigits(raw) { return raw.replace(/\D/g, ""); }
+function ogmValid(raw) {
+  const d = ogmDigits(raw);
+  if (d.length !== 12) return false;
+  const base = Number(d.slice(0, 10)) % 97;
+  const check = Number(d.slice(10));
+  return (base === 0 ? 97 : base) === check;
+}
+function formatOgm(raw) {
+  const d = ogmDigits(raw);
+  return d.length === 12 ? `+++${d.slice(0,3)}/${d.slice(3,7)}/${d.slice(7)}+++` : raw;
+}
+function normAmount(raw) {
+  let s = raw.replace(/[^\d.,]/g, "");
+  if (!s) return null;
+  const lastComma = s.lastIndexOf(","), lastDot = s.lastIndexOf(".");
+  const dec = Math.max(lastComma, lastDot);
+  if (dec >= 0 && s.length - dec - 1 <= 2) {
+    s = s.slice(0, dec).replace(/[.,]/g, "") + "." + s.slice(dec + 1);
+  } else {
+    s = s.replace(/[.,]/g, "");
+  }
+  const n = Number(s);
+  return isFinite(n) && n > 0 ? n.toFixed(2) : null;
+}
+
+// ---------- PDF reading ----------
+async function pdfToLines(buf) {
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  const lines = [];
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    const rows = [];
+    for (const it of content.items) {
+      if (!it.str || !it.str.trim()) continue;
+      const y = it.transform[5], x = it.transform[4];
+      let row = rows.find(r => Math.abs(r.y - y) < 3);
+      if (!row) { row = { y, parts: [] }; rows.push(row); }
+      row.parts.push({ x, s: it.str });
+    }
+    rows.sort((a, b) => b.y - a.y);
+    for (const r of rows) {
+      r.parts.sort((a, b) => a.x - b.x);
+      lines.push(r.parts.map(q => q.s).join(" ").replace(/\s+/g, " ").trim());
+    }
+  }
+  return lines;
+}
+
+function parseInvoice(lines) {
+  const text = lines.join("\n");
+  const out = { name: "", iban: "", bic: "", amount: "", ref: "", due: "" };
+
+  // IBAN: prefer the one after "rekeningnummer"
+  const ibanRe = /\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,3})?\b/g;
+  const anchor = text.search(/rekeningnummer/i);
+  const scoped = anchor >= 0 ? text.slice(anchor) : text;
+  let m, found = null;
+  ibanRe.lastIndex = 0;
+  while ((m = ibanRe.exec(scoped))) {
+    // trim trailing BIC glued onto the IBAN by the lazy tail group
+    let cand = m[0];
+    for (let cut = cand.length; cut >= 15; cut--) {
+      if (ibanValid(cand.slice(0, cut))) { found = { iban: cand.slice(0, cut), end: m.index + cut }; break; }
+    }
+    if (found) break;
+  }
+  if (found) {
+    out.iban = found.iban.replace(/\s+/g, "").replace(/(.{4})/g, "$1 ").trim();
+    const after = scoped.slice(found.end, found.end + 40);
+    const b = after.match(/\b([A-Z]{4}[A-Z]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?)\b/);
+    if (b) out.bic = b[1];
+  }
+
+  // Amount
+  let a = text.match(/Bedrag:?\s*(?:EUR\s*)?([\d.]*\d,\d{2})/i) ||
+          text.match(/Totaal te betalen in EUR\s*([\d.]*\d,\d{2})/i);
+  if (a) out.amount = a[1];
+
+  // Structured reference
+  const r = text.match(/\+\+\+\s*(\d{3})\s*\/\s*(\d{4})\s*\/\s*(\d{5})\s*\+\+\+/);
+  if (r) out.ref = `+++${r[1]}/${r[2]}/${r[3]}+++`;
+
+  // Due date (dd/mm/yyyy -> yyyy-mm-dd)
+  const d = text.match(/Vervaldatum\s*:?\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/i);
+  if (d) out.due = `${d[3]}-${d[2].padStart(2, "0")}-${d[1].padStart(2, "0")}`;
+
+  // Payee
+  const n =text.match(/Op naam van:?\s*(.+?)(?:\n|$)/i);
+  if (n) out.name = n[1].replace(/\s*Met gestructureerde.*$/i, "").trim();
+
+  return out;
+}
+
+// ---------- EPC payload ----------
+function buildPayload(f) {
+  const iban = f.iban.replace(/\s+/g, "").toUpperCase();
+  const amt = normAmount(f.amount);
+  const name = f.name.trim().slice(0, 70);
+  if (!iban || !ibanValid(iban) || !amt || !name) return null;
+  let structured = "", free = "";
+  if (f.ref.trim()) {
+    if (f.mode === "digits") structured = ogmDigits(f.ref);
+    else if (f.mode === "plus") structured = formatOgm(f.ref);
+    else free = f.ref.trim();
+  }
+  return [
+    "BCD", "002", "1", "SCT",
+    f.bic.replace(/\s+/g, "").toUpperCase(),
+    name, iban, "EUR" + amt,
+    "",           // purpose
+    structured,   // structured remittance reference
+    free          // unstructured remittance (free text)
+  ].join("\n");
+}
+
+// ---------- pay-date advice ----------
+const PAY_DAYS_BEFORE = 5;
+function localMidnight(iso) { const [y, m, d] = iso.split("-").map(Number); return new Date(y, m - 1, d); }
+function fmtDate(dt) { return dt.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" }); }
+function payAdvice(dueIso, today = new Date()) {
+  if (!dueIso) return null;
+  const due = localMidnight(dueIso);
+  const t = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const DAY = 86400000;
+  const daysToDue = Math.round((due - t) / DAY);
+  const payOn = new Date(due.getTime() - PAY_DAYS_BEFORE * DAY);
+  const daysToPay = Math.round((payOn - t) / DAY);
+  if (daysToDue < 0) return { kind: "now", head: "Overdue: pay now", sub: `Due date was ${fmtDate(due)} (${-daysToDue} days ago)` };
+  if (daysToPay <= 0) return { kind: "now", head: "Pay now", sub: `Due ${fmtDate(due)}, in ${daysToDue} day${daysToDue === 1 ? "" : "s"}` };
+  return { kind: "later", head: `Pay on ${fmtDate(payOn)}`, sub: `In ${daysToPay} days. Due ${fmtDate(due)}. Set this as the execution date in your app.` };
+}
+
+// ---------- UI ----------
+function field() {
+  return { name: $("name").value, iban: $("iban").value, bic: $("bic").value,
+           amount: $("amount").value, ref: $("ref").value, mode: $("mode").value };
+}
+function setBadge(el, ok, okText, badText, empty) {
+  if (empty) { el.textContent = ""; el.className = "badge"; return; }
+  el.textContent = ok ? "✓ " + okText : "✗ " + badText;
+  el.className = "badge " + (ok ? "ok" : "bad");
+}
+function render() {
+  const f = field();
+  setBadge($("ibanCheck"), ibanValid(f.iban), "valid", "checksum fails", !f.iban.trim());
+  setBadge($("refCheck"), ogmValid(f.ref), "valid", "checksum fails", !f.ref.trim());
+
+  const warn = [];
+  if (f.ref.trim() && !ogmValid(f.ref)) warn.push("The reference is not a valid Belgian structured communication.");
+  if (f.amount.trim() && !normAmount(f.amount)) warn.push("Amount not understood.");
+  $("warn").style.display = warn.length ? "block" : "none";
+  $("warn").textContent = warn.join(" ");
+
+  const adv = payAdvice($("due").value);
+  const w = $("when");
+  if (adv) { w.className = "when " + adv.kind; w.style.display = "block"; w.innerHTML = ""; w.append(adv.head); const s = document.createElement("small"); s.textContent = adv.sub; w.append(s); }
+  else { w.style.display = "none"; }
+
+  const payload = buildPayload(f);
+  const box = $("qrbox");
+  if (!payload) {
+    box.innerHTML = '<div class="empty">The QR appears here once payee, IBAN and amount are filled in.</div>';
+    $("summary").innerHTML = ""; $("payload").textContent = "";
+    return;
+  }
+  const qr = qrcode(0, "M");
+  qr.addData(payload, "Byte");
+  qr.make();
+  box.innerHTML = qr.createSvgTag({ cellSize: 6, margin: 4, scalable: true });
+  const amt = normAmount(f.amount);
+  const rows = [["Payee", f.name.trim()], ["IBAN", f.iban.replace(/\s+/g, " ").trim()],
+                ["Amount", "EUR " + amt.replace(".", ",")], ["Reference", f.ref.trim() || "(none)"]];
+  $("summary").innerHTML = rows.map(([k, v]) => `<div><span>${k}</span><span></span></div>`).join("");
+  [...$("summary").children].forEach((d, i) => d.lastChild.textContent = rows[i][1]);
+  $("payload").textContent = payload;
+}
+
+async function processPdf(buf) {
+  const lines = await pdfToLines(buf);
+  const p = parseInvoice(lines);
+  $("name").value = p.name; $("iban").value = p.iban; $("bic").value = p.bic;
+  $("amount").value = p.amount; $("ref").value = p.ref; $("due").value = p.due;
+  render();
+  return p;
+}
+async function handleFile(file) {
+  if (!file) return;
+  try { await processPdf(await file.arrayBuffer()); }
+  catch (e) { $("warn").style.display = "block"; $("warn").textContent = "Could not read that PDF: " + e.message; }
+}
+
+const drop = $("drop"), fileInput = $("file");
+drop.addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", () => handleFile(fileInput.files[0]));
+["dragenter", "dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", e => handleFile(e.dataTransfer.files[0]));
+// dropping anywhere on the page should not open the PDF in the browser
+window.addEventListener("dragover", e => e.preventDefault());
+window.addEventListener("drop", e => { e.preventDefault(); handleFile(e.dataTransfer.files[0]); });
+["name", "iban", "bic", "amount", "due", "ref", "mode"].forEach(id => $(id).addEventListener("input", render));
+render();
+</script>
+</body>
+</html>
